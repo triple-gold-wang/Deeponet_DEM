@@ -110,14 +110,17 @@ def compute_dem_loss(model, params, X_inner, X_right, L=1.0, R0=0.3, E=1.0, nu=0
     J21, J22 = dy_dX_Y[..., 0], dy_dX_Y[..., 1]
 
     detJ = J11*J22 - J12*J21 # 雅可比行列式 [B, N_in]
+    eps_det = 1e-6
+    sign_det = torch.where(detJ >= 0, torch.ones_like(detJ), -torch.ones_like(detJ))
+    detJ_safe = sign_det * detJ.abs().clamp_min(eps_det)
 
     # ===============================
     # Step C: 计算真实应变 (链式法则)
     # ===============================
-    du_dx = (du_dX * J22 - du_dY * J21) / detJ
-    du_dy = (-du_dX * J12 + du_dY * J11) / detJ
-    dv_dx = (dv_dX * J22 - dv_dY * J21) / detJ
-    dv_dy = (-dv_dX * J12 + dv_dY * J11) / detJ
+    du_dx = (du_dX * J22 - du_dY * J21) / detJ_safe
+    du_dy = (-du_dX * J12 + du_dY * J11) / detJ_safe
+    dv_dx = (dv_dX * J22 - dv_dY * J21) / detJ_safe
+    dv_dy = (-dv_dX * J12 + dv_dY * J11) / detJ_safe
 
     eps_xx = du_dx
     eps_yy = dv_dy
@@ -127,7 +130,7 @@ def compute_dem_loss(model, params, X_inner, X_right, L=1.0, R0=0.3, E=1.0, nu=0
     # Step D: 计算应变能 (平面应力)
     # ===============================
     C = E / (2 * (1 - nu**2))
-    W = C * (eps_xx**2 + eps_yy**2 + 2*nu*eps_xx*eps_yy + (1 - nu)*eps_xy**2) # [B, N_in]
+    W = C * (eps_xx**2 + eps_yy**2 + 2*nu*eps_xx*eps_yy + 0.5*(1 - nu)*eps_xy**2) # [B, N_in]
     
     # 蒙特卡洛积分：能量密度 * 雅可比行列式，然后在参考域求均值再乘面积
     Area_ref = 4 * (L**2) - torch.pi * (R0**2)
