@@ -68,22 +68,26 @@ except FileNotFoundError:
     exit()
 
 # 2.2 构建 DataLoader 实现自动批处理
-dataset = TensorDataset(params_tensor)
-
-val_size = max(1, int(len(dataset) * VAL_RATIO))
-train_size = len(dataset) - val_size
-if train_size <= 0:
-    raise ValueError("训练集大小为 0，请减小 VAL_RATIO 或增加样本数量。")
-
-train_dataset, val_dataset = random_split(
-    dataset,
-    [train_size, val_size],
-    generator=torch.Generator().manual_seed(SPLIT_SEED)
-)
-
+aspect_ratio = params_tensor[:, 0] / params_tensor[:, 1]
+hard_mask = aspect_ratio > 4.0
+generator = torch.Generator().manual_seed(SPLIT_SEED)
+train_indices = []
+val_indices = []
+for is_hard in [False, True]:
+    group_indices = torch.where(hard_mask == is_hard)[0]
+    group_indices = group_indices[torch.randperm(len(group_indices), generator=generator)]
+    group_val_size = max(1, int(len(group_indices) * VAL_RATIO))
+    val_indices.append(group_indices[:group_val_size])
+    train_indices.append(group_indices[group_val_size:])
+train_indices = torch.cat(train_indices)
+val_indices = torch.cat(val_indices)
+train_indices = train_indices[torch.randperm(len(train_indices), generator=generator)]
+val_indices = val_indices[torch.randperm(len(val_indices), generator=generator)]
+train_dataset = TensorDataset(params_tensor[train_indices])
+val_dataset = TensorDataset(params_tensor[val_indices])
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-print(f"成功加载几何参数，共 {len(dataset)} 个样本。训练集: {train_size}，验证集: {val_size}。")
+print(f"成功加载几何参数，共 {len(params_tensor)} 个样本。训练集: {len(train_dataset)}，验证集: {len(val_dataset)}。")
 
 # 2.3 生成参考域坐标点 (这部分是固定的，所以只在循环外生成一次！)
 sampler = DomainSampler(L=L_CONFIG, R0=R0_CONFIG)
@@ -98,7 +102,7 @@ print(f"参考域采样完成: 内部点 {X_inner.shape[0]} 个, 右边界点 {X
 print("\n--- 正在初始化模型 ---")
 
 # 定义网络结构 (你可以根据需要增减层数)
-branch_layers = [3, 64, 128, 100]  # 输入维度 3
+branch_layers = [4, 64, 128, 100]  # 输入维度 4: a_norm, b_norm, cos(2theta), sin(2theta)
 trunk_layers = [2, 64, 128, 100]   # 输入维度 2
 
 # 实例化模型并移至对应设备

@@ -19,6 +19,37 @@ import csv
 import math
 import os
 
+# ==========================================
+# 批量运行配置
+# ==========================================
+# 在 Abaqus/CAE 图形界面中通过 File -> Run Script 运行时，
+# 当前工作目录不一定是脚本所在目录，所以这里显式定位到 gt 目录。
+try:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    BASE_DIR = os.getcwd()
+CSV_FILE = os.path.join(BASE_DIR, 'geometry_params_200.csv')
+OUTPUT_DIR = BASE_DIR
+
+# 当前先只生成 main.py 分层验证集对应的真值。
+# 这些 ID 由 main.py 的逻辑得到：
+# VAL_RATIO = 0.2, SPLIT_SEED = 42, hard_mask = (a / b > 4.0)
+RUN_MODE = 'validation'  # 可选: 'validation' 或 'all'
+VALIDATION_SHAPE_IDS = set([
+    118, 293, 65, 19, 186, 261, 302, 297, 374, 218,
+    244, 273, 271, 360, 184, 104, 204, 27, 310, 58,
+    189, 369, 179, 103, 25, 319, 35, 99, 146, 82,
+    220, 315, 72, 182, 23, 399, 183, 266, 397, 76,
+    38, 188, 199, 222, 228, 115, 223, 334, 198, 281,
+    147, 168, 106, 215, 214, 357, 2, 309, 325, 170,
+    80, 248, 393, 138, 192, 90, 174, 28, 26, 169,
+    288, 21, 289, 207, 380, 164, 290, 370, 194, 6,
+])
+
+# 已有旧真值可能对应旧参数表。为了避免误用旧数据，默认重新覆盖生成。
+OVERWRITE_EXISTING = True
+MAX_SHAPES = None  # 调试时可改成 1 或 2，确认流程正常后再改回 None。
+
 def run_single_model(shape_id, a, b, theta):
     # ==========================================
     # 0. 初始化与清理内存 (极其关键，防止连续运行报错)
@@ -117,7 +148,7 @@ def run_single_model(shape_id, a, b, theta):
 
 def extract_data_to_csv(job_name, shape_id):
     odb_path = job_name + '.odb'
-    csv_path = 'abaqus_truth_{}.csv'.format(shape_id)
+    csv_path = os.path.join(OUTPUT_DIR, 'abaqus_truth_{}.csv'.format(shape_id))
     
     print("正在提取数据到: {}".format(csv_path))
     odb = openOdb(path=odb_path, readOnly=True)
@@ -125,7 +156,7 @@ def extract_data_to_csv(job_name, shape_id):
     disp_field = last_frame.fieldOutputs['U']
     
     # 获取节点坐标
-    instance_name = odb.rootAssembly.instances.keys()[0]
+    instance_name = list(odb.rootAssembly.instances.keys())[0]
     nodes = odb.rootAssembly.instances[instance_name].nodes
     
     disp_dict = {}
@@ -153,26 +184,71 @@ def extract_data_to_csv(job_name, shape_id):
             pass
     print("Shape ID: {} 处理完成！\n".format(shape_id))
 
+def load_geometry_rows(csv_file):
+    rows = []
+    with open(csv_file, 'r') as f:
+        reader = csv.DictReader(f)
+        required_cols = ['shape_id', 'a', 'b', 'theta']
+        for col in required_cols:
+            if col not in reader.fieldnames:
+                raise ValueError("参数文件缺少必要列: {}".format(col))
+
+        for row in reader:
+            shape_id = int(row['shape_id'])
+            rows.append({
+                'shape_id': shape_id,
+                'a': float(row['a']),
+                'b': float(row['b']),
+                'theta': float(row['theta']),
+            })
+    return rows
+
+def select_rows(rows):
+    if RUN_MODE == 'all':
+        selected = rows
+    elif RUN_MODE == 'validation':
+        selected = [row for row in rows if row['shape_id'] in VALIDATION_SHAPE_IDS]
+        missing_ids = sorted(VALIDATION_SHAPE_IDS - set(row['shape_id'] for row in selected))
+        if missing_ids:
+            print("警告：参数表中找不到以下验证集 ID: {}".format(missing_ids))
+    else:
+        raise ValueError("未知 RUN_MODE: {}".format(RUN_MODE))
+
+    selected = sorted(selected, key=lambda row: row['shape_id'])
+    if MAX_SHAPES is not None:
+        selected = selected[:MAX_SHAPES]
+    return selected
+
 # ==========================================
 # 主循环：读取配置表并批量执行
 # ==========================================
 if __name__ == '__main__':
-    csv_file = 'geometry_params_200.csv'
+    os.chdir(BASE_DIR)
     
-    if not os.path.exists(csv_file):
-        print("未找到参数文件: {}".format(csv_file))
+    if not os.path.exists(CSV_FILE):
+        print("未找到参数文件: {}".format(CSV_FILE))
     else:
-        with open(csv_file, 'r') as f:
-            reader = csv.reader(f)
-            header = next(reader) # 跳过表头
-            
-            for row in reader:
-                shape_id = int(row[0])
-                a = float(row[1])
-                b = float(row[2])
-                theta = float(row[3])
-                
-                try:
-                    run_single_model(shape_id, a, b, theta)
-                except Exception as e:
-                    print("Shape ID {} 发生错误: {}".format(shape_id, str(e)))
+        rows = load_geometry_rows(CSV_FILE)
+        selected_rows = select_rows(rows)
+
+        hard_count = 0
+        for row in selected_rows:
+            if row['a'] / row['b'] > 4.0:
+                hard_count += 1
+        print("参数文件: {}".format(CSV_FILE))
+        print("运行模式: {}".format(RUN_MODE))
+        print("待生成真值数量: {}，其中高长宽比 a/b>4: {}".format(len(selected_rows), hard_count))
+        print("输出目录: {}".format(OUTPUT_DIR))
+        print("是否覆盖已有真值: {}".format(OVERWRITE_EXISTING))
+
+        for row in selected_rows:
+            shape_id = row['shape_id']
+            output_csv = os.path.join(OUTPUT_DIR, 'abaqus_truth_{}.csv'.format(shape_id))
+            if os.path.exists(output_csv) and not OVERWRITE_EXISTING:
+                print("Shape ID {} 已存在，跳过: {}".format(shape_id, output_csv))
+                continue
+
+            try:
+                run_single_model(shape_id, row['a'], row['b'], row['theta'])
+            except Exception as e:
+                print("Shape ID {} 发生错误: {}".format(shape_id, str(e)))

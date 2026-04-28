@@ -18,7 +18,7 @@ class FNN(nn.Module):
 class SolidDeepONet(nn.Module):
     def __init__(self, branch_layers, trunk_layers, L=1.0):
         """
-        branch_layers: 例如 [3, 64, 128, p*2] (输入 a, b, theta)
+        branch_layers: 例如 [4, 64, 128, p*2] (输入归一化后的几何参数)
         trunk_layers: 例如 [2, 64, 128, p*2] (输入 X, Y)
         L: 正方形半边长，用于边界约束
         """
@@ -29,7 +29,7 @@ class SolidDeepONet(nn.Module):
 
     def forward(self, params, X_ref):
         """
-        params: [B, 3] -> 几何参数 (a, b, theta)
+        params: [B, 4] -> Branch 网络输入参数
         X_ref: 可能是 [N, 2] (单个坐标网格)，也可能是 [B, N, 2] (批量坐标网格)
         """
         # 1. 提取特征
@@ -70,7 +70,7 @@ class SolidDeepONet(nn.Module):
     
 
 if __name__ == '__main__':
-    branch_layers = [3, 64, 128, 100] 
+    branch_layers = [4, 64, 128, 100] 
     # 设定 Trunk 网络层数: 输入2个坐标 (X,Y), 隐藏层 64, 128, 最后的特征维度也是 100
     trunk_layers = [2, 64, 128, 100] 
 
@@ -81,9 +81,9 @@ if __name__ == '__main__':
     batch_size = 32   # 假设我们一次性输入 32 种不同的椭圆形状
     N_points = 5000   # 假设我们在参考域撒了 5000 个点
 
-    # Branch 的 Dummy 输入：维度 [batch_size, 3]
+    # Branch 的 Dummy 输入：维度 [batch_size, 4]
     # 使用 torch.rand 生成 [0, 1) 之间的均匀分布随机数模拟参数
-    dummy_params = torch.rand((batch_size, 3)) 
+    dummy_params = torch.rand((batch_size, 4)) 
 
     # Trunk 的 Dummy 输入：维度 [N_points, 2]
     # 使用 torch.randn 生成标准正态分布随机数模拟坐标

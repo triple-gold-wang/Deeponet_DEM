@@ -14,6 +14,7 @@ from scipy.interpolate import griddata
 # 从你的代码中导入网络模型和几何映射工具
 from model import SolidDeepONet
 from geometry import GeometricMapper, DomainSampler
+from loss import normalize_geometry_params
 
 # ==========================================
 # 可视化配置（不影响原有评估逻辑）
@@ -153,7 +154,7 @@ def main():
     print(f"评估设备: {device}")
     
     # 1. 实例化网络并加载权重 (替换为你真实的模型加载逻辑)
-    branch_layers = [3, 64, 128, 100]  # 输入维度 3
+    branch_layers = [4, 64, 128, 100]  # 输入维度 4
     trunk_layers = [2, 64, 128, 100]   # 输入维度 2
     model = SolidDeepONet(branch_layers, trunk_layers).to(device)
     model.load_state_dict(torch.load('deeponet_dem_test.pth', map_location=device))
@@ -166,7 +167,7 @@ def main():
     X_inner_model = X_inner.to(device)
     
     # ==========================================
-    # 1. 读取主索引并截取前 79 个形状
+    # 1. 读取主索引，并按训练脚本相同规则取验证集
     # ==========================================
     csv_index_path = 'geometry_params_200.csv'
     abaqus_data_dir = os.path.join('gt')
@@ -176,15 +177,26 @@ def main():
         return
         
     master_params = pd.read_csv(csv_index_path)
-    # 仅选取前 79 个形状 (索引 0 到 78)
-    test_params = master_params.head(79)
+    params_tensor = torch.tensor(master_params[['a', 'b', 'theta']].values, dtype=torch.float32)
+    aspect_ratio = params_tensor[:, 0] / params_tensor[:, 1]
+    hard_mask = aspect_ratio > 4.0
+    generator = torch.Generator().manual_seed(42)
+    val_indices = []
+    for is_hard in [False, True]:
+        group_indices = torch.where(hard_mask == is_hard)[0]
+        group_indices = group_indices[torch.randperm(len(group_indices), generator=generator)]
+        group_val_size = max(1, int(len(group_indices) * 0.2))
+        val_indices.append(group_indices[:group_val_size])
+    val_indices = torch.cat(val_indices)
+    val_indices = val_indices[torch.randperm(len(val_indices), generator=generator)]
+    test_params = master_params.iloc[val_indices.tolist()]
     
     total_l2_errors = []
     success_count = 0
     vis_samples = []
     
     print("\n=============================================")
-    print("开始进行前 79 个形状的自动化误差对比评估...")
+    print(f"开始进行验证集 {len(test_params)} 个形状的自动化误差对比评估...")
     print("=============================================\n")
 
     # ==========================================
@@ -207,7 +219,8 @@ def main():
         params_tensor = torch.tensor([[a, b, theta]], dtype=torch.float32, device=device)
         
         with torch.no_grad():
-            u_pred_tensor = model(params_tensor, X_inner_model).squeeze(0)
+            branch_params = normalize_geometry_params(params_tensor)
+            u_pred_tensor = model(branch_params, X_inner_model).squeeze(0)
             x_target_tensor = mapper.map_points(X_inner, a, b, theta)
             
         x_nn = x_target_tensor[:, 0].detach().cpu().numpy()

@@ -3,6 +3,24 @@ import torch
 # ==========================================
 # 1. 辅助求导函数
 # ==========================================
+def normalize_geometry_params(params):
+    """
+    将原始几何参数 [a, b, theta] 转换为 Branch 网络输入:
+    [a_norm, b_norm, cos(2theta), sin(2theta)]
+    """
+    a = params[:, 0:1]
+    b = params[:, 1:2]
+    theta = params[:, 2:3]
+
+    a_norm = 2.0 * (a - 0.2) / (0.8 - 0.2) - 1.0
+    b_norm = 2.0 * (b - 0.1) / (0.8 - 0.1) - 1.0
+
+    return torch.cat(
+        [a_norm, b_norm, torch.cos(2.0 * theta), torch.sin(2.0 * theta)],
+        dim=1
+    )
+
+
 def get_gradient(y, x):
     """
     计算张量 y 对张量 x 的梯度
@@ -79,7 +97,8 @@ def compute_dem_loss(model, params, X_inner, X_right, L=1.0, R0=0.3, E=1.0, nu=0
     N_in = X_batch.shape[1]
     X_eval = torch.cat([X_batch, X_right_batch], dim=1) # [B, N_in + N_right, 2]
     
-    U_pred = model(params, X_eval) # [B, N_in + N_right, 2]
+    branch_params = normalize_geometry_params(params)
+    U_pred = model(branch_params, X_eval) # [B, N_in + N_right, 2]
     
     # 拆分预测结果
     U_inner = U_pred[:, :N_in, :]    # [B, N_in, 2]
@@ -130,7 +149,7 @@ def compute_dem_loss(model, params, X_inner, X_right, L=1.0, R0=0.3, E=1.0, nu=0
     # Step D: 计算应变能 (平面应力)
     # ===============================
     C = E / (2 * (1 - nu**2))
-    W = C * (eps_xx**2 + eps_yy**2 + 2*nu*eps_xx*eps_yy + 0.5*(1 - nu)*eps_xy**2) # [B, N_in]
+    W = C * (eps_xx**2 + eps_yy**2 + 2*nu*eps_xx*eps_yy + 2*(1 - nu)*eps_xy**2) # [B, N_in]
     
     # 蒙特卡洛积分：能量密度 * 雅可比行列式，然后在参考域求均值再乘面积
     Area_ref = 4 * (L**2) - torch.pi * (R0**2)
